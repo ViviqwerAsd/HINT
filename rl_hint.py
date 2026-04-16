@@ -87,7 +87,7 @@ def load_training_data(data_file_path):
             hint = item.get("abstract_hint") or item.get("H")
             if not all([question, answer, hint]):
                 raise ValueError(
-                    f"Line {line_id} in {data_file_path} is missing one of "
+                    f"Line {line_id } in {data_file_path } is missing one of "
                     "'question/problem', 'answer', or 'abstract_hint'."
                 )
             records.append({"Q": question, "A": answer, "H": hint})
@@ -99,12 +99,14 @@ all_corrs = []
 
 def rollout_monitor(samples):
     global all_corrs
-    corrs = [1 if rewards.get("correct_fn", -1) > 0 else 0 for rewards in samples["rewards"]]
+    corrs = [
+        1 if rewards.get("correct_fn", -1) > 0 else 0 for rewards in samples["rewards"]
+    ]
     all_corrs.extend(corrs)
     if len(all_corrs) > 1000:
         all_corrs = all_corrs[-1000:]
     acc = sum(all_corrs) / len(all_corrs)
-    print(f"[ROLL] rollout monitor: acc: {acc:.2f}")
+    print(f"[ROLL] rollout monitor: acc: {acc :.2f}")
 
 
 def run_ref_server(args):
@@ -147,17 +149,20 @@ def run_gsm8k_test(args):
     prompts = [make_prompt_fn(test_obj, x) for x in qas]
     voutputs = vllm_gen.generate(prompts, sampling_params, use_tqdm=True)
 
-    corrs = [int(correct_fn(output.outputs[0].text, item) > 0) for output, item in zip(voutputs, qas)]
+    corrs = [
+        int(correct_fn(output.outputs[0].text, item) > 0)
+        for output, item in zip(voutputs, qas)
+    ]
     wrongs = [idx for idx, corr in enumerate(corrs) if corr == 0]
     acc = sum(corrs) / len(corrs) if corrs else 0.0
-    print(f"Accuracy: {acc:.2%}")
+    print(f"Accuracy: {acc :.2%}")
 
     if args.results_file:
         with open(args.results_file, "w", encoding="utf-8") as f:
             for idx in wrongs:
                 text = voutputs[idx].outputs[0].text
                 item = qas[idx]
-                f.write(f'Q: {item["Q"]}\nA: {item["A"]}\nModel: {text}\n\n')
+                f.write(f'Q: {item ["Q"]}\nA: {item ["A"]}\nModel: {text }\n\n')
 
 
 def run_training(args):
@@ -199,10 +204,14 @@ def run_training(args):
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="HINT training and evaluation entrypoint.")
+    parser = argparse.ArgumentParser(
+        description="HINT training and evaluation entrypoint."
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    ref_parser = subparsers.add_parser("serve-ref", help="Start the reference log-probability server.")
+    ref_parser = subparsers.add_parser(
+        "serve-ref", help="Start the reference log-probability server."
+    )
     ref_parser.add_argument("--model-path", type=str, required=True)
     ref_parser.add_argument("--host", type=str, default="0.0.0.0")
     ref_parser.add_argument("--port", type=int, default=59888)
@@ -212,7 +221,9 @@ def build_parser():
 
     train_parser = subparsers.add_parser("train", help="Train HINT with Meta-Hints.")
     train_parser.add_argument("--model-path", type=str, required=True)
-    train_parser.add_argument("--data-file", type=str, default="./data/dapo-selected-10k.jsonl")
+    train_parser.add_argument(
+        "--data-file", type=str, default="./data/dapo-selected-10k.jsonl"
+    )
     train_parser.add_argument("--save-path", type=str, default="./outputs/hint")
     train_parser.add_argument("--ref-url", type=str, default="http://127.0.0.1:59888")
     train_parser.add_argument("--epochs", type=int, default=10)
@@ -236,7 +247,9 @@ def build_parser():
     train_parser.add_argument("--swanlab-experiment-name", type=str, default="")
     train_parser.set_defaults(func=run_training)
 
-    test_parser = subparsers.add_parser("gsm8k-test", help="Run quick GSM8K evaluation for a checkpoint.")
+    test_parser = subparsers.add_parser(
+        "gsm8k-test", help="Run quick GSM8K evaluation for a checkpoint."
+    )
     test_parser.add_argument("--model-path", type=str, required=True)
     test_parser.add_argument("--limit", type=int, default=None)
     test_parser.add_argument("--temperature", type=float, default=0.001)

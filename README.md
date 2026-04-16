@@ -143,10 +143,10 @@ python rl_hint.py gsm8k-test \
 ## Citation
 
 ```bibtex
-@misc{hint2026,
-  title={HINT: Helping Ineffective Rollouts Navigate Toward Effectiveness},
-  author={Anonymous},
-  year={2026},
-  note={ACL 2026 submission}
+@inproceedings{wang-etal-2026-guide-rollouts,
+  title = {Don't Tell the Answer, Truly Guide the Reasoning During RL Rollouts},
+  author = {Wang, Xinyi and Han, Jinyi and Jiang, Zishang and Li, Tingyun and Liang, Jiaqing and Jiang, Sihang and Dai, Zhaoqian and Ma, Shuguang and Yu, Fei and Xiao, Yanghua},
+  booktitle = {Findings of the Association for Computational Linguistics: ACL 2026},
+  year = {2026}
 }
 ```
