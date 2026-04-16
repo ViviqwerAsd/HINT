@@ -1,5 +1,5 @@
 
-import json, os, shutil, re, random, io, requests, ctypes, sys, time, struct, types, queue
+import json, os, shutil, re, random, io, requests, ctypes, sys, time, struct, types, queue, math
 import torch
 import torch.nn as nn
 import numpy as np
@@ -10,8 +10,11 @@ from tqdm import tqdm
 os.environ['TOKENIZERS_PARALLELISM'] = 'true'
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from utils import json_to_bytes_list, bytes_list_to_json, save_model, enable_gradient_checkpointing
-import swanlab
-swanlab.login(api_key = "iKjqwSpVRfF9pFL67atdt", save = True)
+try:
+    import swanlab
+except ImportError:
+    swanlab = None
+
 def get_world_size(): return int(os.environ.get('WORLD_SIZE', 1))
 
 class LSTrainer:
@@ -127,8 +130,8 @@ class LSRL:
                  gen_device=4, train_batch_size=2, gen_update_steps=-1, save_steps=200, gen_batch_size=1,
                  beta=0.04, clip_param=0.2, compute_gen_logps=True, ref_server="http://localhost:59876",
                  gen_max_tokens=4096, gen_temperature=0.9, genlog_filename=None, reward_processor='base',
-                 max_pending_samples=40, gen_pending_time=10, skip_zero_groups=False, vllm_kwargs=None, 
-                 use_vllm = True, DAPO_kwargs=None, swanlab_project = None, swanlab_experiment_name = None,
+                 max_pending_samples=40, gen_pending_time=10, skip_zero_groups=False, vllm_kwargs=None,
+                 use_vllm = True, DAPO_kwargs=None, affinity_lambda=1.0, swanlab_project = None, swanlab_experiment_name = None,
                  save_path = None, **kwargs):
         self.model_path = model_path
         self.save_path = save_path
@@ -144,9 +147,18 @@ class LSRL:
         self.algorithm = 'GRPO' if DAPO_kwargs is None else 'DAPO'
         self.swanlab_project = swanlab_project
         self.swanlab_experiment_name = swanlab_experiment_name
+        self.affinity_lambda = affinity_lambda
         self._hooks = {}
 
-        run = swanlab.init(project=self.swanlab_project, name=self.swanlab_experiment_name)
+        self.swanlab_run = None
+        if swanlab is not None and self.swanlab_project:
+            api_key = os.environ.get("SWANLAB_API_KEY")
+            if api_key:
+                swanlab.login(api_key=api_key, save=True)
+            self.swanlab_run = swanlab.init(
+                project=self.swanlab_project,
+                name=self.swanlab_experiment_name,
+            )
 
         if train_batch_size > rollout_num:
             assert train_batch_size % rollout_num == 0, "train_batch_size must be divisible by rollout_num"
@@ -175,7 +187,10 @@ class LSRL:
         self.gen_pending_time = gen_pending_time
 
         if not use_vllm:
-            from .no_vllm_lsrl_patch import apply_no_vllm_patch
+            try:
+                from .no_vllm_lsrl_patch import apply_no_vllm_patch
+            except ImportError:
+                from no_vllm_lsrl_patch import apply_no_vllm_patch
             apply_no_vllm_patch(self)
             assert self.algorithm == 'GRPO', "no_vllm_lsrl_patch only supports GRPO algorithm"
 
@@ -280,21 +295,39 @@ class LSRL:
         with torch.no_grad():
             probs = torch.softmax(logits, dim=-1)
             entropy = - (probs * torch.log(probs + 1e-8)).sum(dim=-1)
-            entropy = entropy = (entropy * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)
+            entropy = (entropy * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)
             entropy = entropy.mean().detach().cpu()
             mask = completion_mask.bool()
-            ratio_valid = ratio[mask].detach().cpu()
+            ratio_valid = ratio[mask]
             in_band_mask = (ratio_valid >= 1 - self.clip_param) & (ratio_valid <= 1 + self.clip_param)
-            EUR = in_band_mask.float().mean()
+            token_weights = (advantages.abs() * completion_mask).expand_as(ratio)[mask]
+            eps = 1e-8
 
-            if in_band_mask.any():
-                var_in_band = ratio_valid[in_band_mask].var(unbiased = False)
-                UC = torch.exp(- var_in_band)
-
+            if token_weights.numel() == 0 or token_weights.sum() <= eps:
+                EUR = torch.tensor(0.0, device=ratio.device)
+                UC = torch.tensor(0.0, device=ratio.device)
+                Affinity = torch.tensor(0.0, device=ratio.device)
             else:
-                UC = torch.tensor(0.0, device = ratio.device)
+                in_band_weights = token_weights[in_band_mask]
+                EUR = in_band_weights.sum() / (token_weights.sum() + eps)
 
-            Affinity = EUR * UC
+                if in_band_mask.any() and in_band_weights.sum() > eps:
+                    log_ratio_valid = torch.log(torch.clamp(ratio_valid, min=1e-12))
+                    log_ratio_in_band = log_ratio_valid[in_band_mask]
+                    mu_log = (in_band_weights * log_ratio_in_band).sum() / (in_band_weights.sum() + eps)
+                    UC = torch.sqrt(
+                        (in_band_weights * (log_ratio_in_band - mu_log) ** 2).sum() / (in_band_weights.sum() + eps)
+                    )
+                else:
+                    UC = torch.tensor(0.0, device=ratio.device)
+
+                delta = math.log1p(self.clip_param)
+                tau = max(delta / 2.0, eps)
+                Affinity = EUR * torch.exp(-UC / tau)
+
+        if batch.get('use_aapo', False):
+            affinity_weight = Affinity.detach().to(loss.device).pow(batch.get('affinity_lambda', 1.0))
+            loss = loss * affinity_weight
         return loss, {"EUR": EUR.item(), "UC": UC.item(), "Affinity": Affinity.item(), "Entropy": entropy.item()}
    
     def DAPO_step(self, model, batch):        
@@ -466,11 +499,11 @@ class LSRL:
                             print(f"[GEN {gen_rank}] Group {i} before hint: total_sum = {group_total_sums[i]}, after hint: total_sum = {current_group_total_sum}")
                     
                     print(f"[GEN {gen_rank}] groups_new['rewards']", groups['rewards'])
-                    return samples, groups
+                    return samples, groups, reroll_indices
 
 
                 rn, tbsz = self.lsrl.rollout_num, self.lsrl.train_batch_size
-                samples, groups = make_groups(items, rn)
+                samples, groups, reroll_indices = make_groups(items, rn)
 
                 if self.lsrl.algorithm == 'DAPO':
                     hard_max_length = self.lsrl.DAPO_kwargs.get('hard_max_length', 2048)
@@ -482,7 +515,7 @@ class LSRL:
                         keepeds.append(keeped)
                     reroll = [i for i, k in enumerate(keepeds) if k < rn]
                     if len(reroll) > 0:
-                        _, reroll_groups = make_groups([items[i] for i in reroll], rn)
+                        _, reroll_groups, _ = make_groups([items[i] for i in reroll], rn)
                         for local_idx, global_idx in enumerate(reroll):
                             old_answers = groups['answers'][global_idx]
                             old_rewards = groups['rewards'][global_idx]
@@ -496,18 +529,22 @@ class LSRL:
                             groups['rewards'][global_idx] = combined_rewards[:rn]
 
                 group_avg_rewards = []
-                for prompt, ganswers, grewards in zip(samples['prompts'], groups['answers'], groups['rewards']):
-                    if len(ganswers) == 0: continue 
+                for group_idx, (prompt, ganswers, grewards) in enumerate(zip(samples['prompts'], groups['answers'], groups['rewards'])):
+                    if len(ganswers) == 0: continue
                     prompt_ids = self.lsrl.tokenizer(prompt, return_tensors="pt", add_special_tokens=False)["input_ids"]
                     curr_ans_ids = [x['token_ids'] for x in ganswers]
                     curr_rewards = torch.tensor([x['total'] for x in grewards], dtype=torch.float32)
                     group_avg_rewards.append(f'{curr_rewards.mean().item():.2f}')
                     if self.lsrl.skip_zero_groups and curr_rewards.max() - curr_rewards.min() < 1e-4: continue
                     curr_rewards = (curr_rewards - curr_rewards.mean()) / (curr_rewards.std() + 1e-4)
+                    group_use_aapo = group_idx in reroll_indices
+                    affinity_lambda = float(self.lsrl.affinity_lambda)
                     for ii in range(0, rn, tbsz):
                         data = {'plen': prompt_ids.shape[1],
                             'inputs': make_batch_inputs(prompt_ids, curr_ans_ids[ii:ii+tbsz]),
-                            'rewards': curr_rewards[ii:ii+tbsz]}
+                            'rewards': curr_rewards[ii:ii+tbsz],
+                            'use_aapo': group_use_aapo,
+                            'affinity_lambda': affinity_lambda}
                         compute_gen_logps(data)
                         rc = requests.post(f"{self.lsrl.ref_server}/upload", data=json_to_bytes_list(data))
                 try: remain_cnt = rc.json().get('remain_cnt', 0)
@@ -677,11 +714,12 @@ class LSRL:
             if step % self.gen_update_steps == 0:
                 distbarrier()
                 if self.rank == 0 and self.Q_state_dict.empty():
-                    print("logging into swanlab ... ")
                     num_micro_steps = self.gen_update_steps
                     avg_metrics = {k: v / num_micro_steps for k, v in global_metrics.items()}
                     print("avg_metrics", avg_metrics)
-                    swanlab.log(avg_metrics, step = step // self.gen_update_steps)
+                    if self.swanlab_run is not None:
+                        print("logging into swanlab ... ")
+                        swanlab.log(avg_metrics, step = step // self.gen_update_steps)
                     global_metrics = {"EUR": 0, "UC": 0, "Affinity": 0, "Entropy": 0}
                     print('[TRAINING PROC] sending latest state_dict ...')
                     state_dict = self.trainer.get_model().state_dict()

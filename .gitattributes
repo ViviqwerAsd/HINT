@@ -1,1 +1,1 @@
-dataset/training_dataset/dapo-selected-30k.jsonl filter=lfs diff=lfs merge=lfs -text
+# Datasets are not versioned in this public repository.

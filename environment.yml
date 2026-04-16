@@ -1,4 +1,4 @@
-name: jzs_grpo
+name: hint
 channels:
   - anaconda
   - conda-forge
@@ -375,4 +375,3 @@ dependencies:
       - yapf==0.43.0
       - yarl==1.18.3
       - zstandard==0.23.0
-prefix: /data/dell/anaconda3/envs/jzs_grpo

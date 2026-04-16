@@ -6,7 +6,10 @@ import bottle
 import torch
 import torch.nn as nn
 
-from .utils import json_to_bytes_list, bytes_list_to_json
+try:
+    from .utils import json_to_bytes_list, bytes_list_to_json
+except ImportError:
+    from utils import json_to_bytes_list, bytes_list_to_json
 
 class RewardServer:
     def __init__(self, model_path, host='0.0.0.0', port=59878):       
@@ -32,4 +35,3 @@ class RewardServer:
 
     def start(self):
         self.run_server()
-    

@@ -1,3 +1,4 @@
+import argparse
 import json, os, shutil, re, random, io, time, random
 os.environ['TOKENIZERS_PARALLELISM'] = 'true'
 import torch
@@ -72,7 +73,10 @@ class RefServer:
             gpu_total = torch.cuda.get_device_properties(0).total_memory
             if param_size > gpu_total * 0.8 or self.force_cpu_offload:
                 print('\nPatch model to use CPU offloading, only support Qwen2 series now...\n')
-                from .patch_for_cpu_offload import patch_qwen2
+                try:
+                    from .patch_for_cpu_offload import patch_qwen2
+                except ImportError:
+                    from patch_for_cpu_offload import patch_qwen2
                 patch_qwen2(self.model, nlayers_keep_in_gpu=self.nlayers_keep_in_gpu)
             else:
                 self.model.to('cuda')
@@ -91,6 +95,22 @@ class RefServer:
             self.result_queue.put(json_to_bytes_list(d))
             if random.random() < 0.1: print(f'raw_queue: {self.raw_queue.qsize()}, result_queue: {self.result_queue.qsize()}')
 
+def build_parser():
+    parser = argparse.ArgumentParser(description="Reference log-probability server for HINT.")
+    parser.add_argument("--model-path", type=str, required=True)
+    parser.add_argument("--host", type=str, default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=59888)
+    parser.add_argument("--force-cpu-offload", action="store_true")
+    parser.add_argument("--nlayers-keep-in-gpu", type=int, default=12)
+    return parser
+
+
 if __name__ == '__main__':
-    # RefServer(model_path='/data2/Qwen/Qwen2.5-7B/').start()
-    RefServer(model_path = '/data2/Qwen/Qwen2.5-7B/').start()
+    args = build_parser().parse_args()
+    RefServer(
+        model_path=args.model_path,
+        host=args.host,
+        port=args.port,
+        force_cpu_offload=args.force_cpu_offload,
+        nlayers_keep_in_gpu=args.nlayers_keep_in_gpu,
+    ).start()

@@ -2,10 +2,16 @@ import torch
 import torch.distributed as dist
 import time, requests
 from tqdm import tqdm
-from .utils import json_to_bytes_list, bytes_list_to_json, save_model, enable_gradient_checkpointing
+try:
+    from .utils import json_to_bytes_list, bytes_list_to_json, save_model, enable_gradient_checkpointing
+except ImportError:
+    from utils import json_to_bytes_list, bytes_list_to_json, save_model, enable_gradient_checkpointing
 
-def apply_no_vllm_patch(lsrl_instance):    
-    from .lsrl import distbarrier, get_world_size
+def apply_no_vllm_patch(lsrl_instance):
+    try:
+        from .lsrl_hint import distbarrier, get_world_size
+    except ImportError:
+        from lsrl_hint import distbarrier, get_world_size
 
     def _generation_mode(self):
         self.trainer.get_model().gradient_checkpointing_disable()
