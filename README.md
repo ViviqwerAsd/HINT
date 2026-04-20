@@ -1,4 +1,4 @@
-# HINT: Helping Ineffective Rollouts Navigate Toward Effectiveness
+# Don't Tell the Answer, Truly Guide the Reasoning During RL Rollouts
 
 Official code for the ACL 2026 submission **HINT**, an adaptive reinforcement learning framework that replaces answer-revealing supervision with heuristic **Meta-Hints**. Instead of telling the model the partial solution directly, HINT nudges exploration while preserving higher training affinity and more stable policy updates.
 
